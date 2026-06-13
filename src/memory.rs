@@ -11,6 +11,7 @@ pub struct SerializableNode {
     pub era: String,
     pub weight: f64,
     pub connections: u32,
+    pub source: Option<String>, 
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -77,8 +78,20 @@ impl AnimusMemory {
                         era: n["era"].as_str().unwrap_or("").to_string(),
                         weight: n["weight"].as_f64().unwrap_or(0.0),
                         connections: n["connections"].as_u64().unwrap_or(0) as u32,
+                        source: n["source"].as_str().map(|s| s.to_string()),
                     });
                 }
+
+                if let Some(edges_array) = v["edges"].as_array() {
+                    for e in edges_array {
+                        memoria.edges.push(SerializableEdge {
+                            from: e["from"].as_u64().unwrap_or(0) as usize,
+                            to: e["to"].as_u64().unwrap_or(0) as usize,
+                            weight: e["weight"].as_f64().unwrap_or(1.0),
+                        });
+                    }
+                }
+
                 return Ok(memoria);
             } else {
                 println!("❌ Error: El JSON no tiene una lista llamada 'nodes'.");
@@ -113,6 +126,7 @@ impl AnimusMemory {
             era: chrono::Local::now().format("%Y-%m").to_string(),
             weight: 1.0,
             connections: 1, // El primer vínculo es con su propia creación
+            source: None,
         };
         
         self.nodes.push(nuevo_nodo);
@@ -135,4 +149,49 @@ impl AnimusMemory {
         if let Some(n) = self.nodes.get_mut(desde) { n.connections += 1; }
         if let Some(n) = self.nodes.get_mut(hasta) { n.connections += 1; }
     }
+
+    pub fn insert_node(&mut self, relation: &str, source: &str, target: &str, novelty: f64) {
+        // 1. source
+        let source_idx = self.nodes.iter().position(|n| n.label == source)
+            .map(|i| i as u32)
+            .unwrap_or_else(|| {
+                let idx = self.nodes.len() as u32;
+                self.nodes.push(SerializableNode {
+                    label: source.to_string(),
+                    content: source.to_string(),
+                    era: chrono::Utc::now().to_rfc3339(),
+                    weight: 1.0,
+                    connections: 0,
+                    source: None,
+                });
+                idx
+            });
+
+        // 2. target
+        let target_idx = self.nodes.iter().position(|n| n.label == target)
+            .map(|i| i as u32)
+            .unwrap_or_else(|| {
+                let idx = self.nodes.len() as u32;
+                self.nodes.push(SerializableNode {
+                    label: target.to_string(),
+                    content: target.to_string(),
+                    era: chrono::Utc::now().to_rfc3339(),
+                    weight: 1.0,
+                    connections: 0,
+                    source: None,
+                });
+                idx
+            });
+
+        // 3. arista
+        self.nodes.push(SerializableNode {
+            label: relation.to_string(),
+            content: format!("{} -> {}", source, target),
+            era: chrono::Utc::now().to_rfc3339(),
+            weight: novelty,
+            connections: target_idx,
+            source: Some(source.to_string()),
+        });
+    }
+
 }

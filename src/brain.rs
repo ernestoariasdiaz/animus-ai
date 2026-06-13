@@ -3,110 +3,161 @@ use crate::memory::{AnimusMemory, SerializableNode, SerializableEdge};
 use sysinfo::System;
 use std::process::{Command, Child, Stdio};
 use std::time::Duration;
+use std::thread;
+
+// ── Configuración del motor (Gemma 4 E2B sobre llama.cpp CUDA) ──
+// AJUSTA estas dos rutas a las reales en tu Dell:
+const LLAMA_SERVER_PATH: &str = r"C:\projects\llama-b9603-bin-win-cuda-13.3-x64\llama-server.exe";
+const MODEL_PATH: &str = r"C:\projects\GEMMA\gemma-4-E2B-it-UD-Q4_K_XL.gguf";
+const SERVER_URL: &str = "http://127.0.0.1:8081";
 
 pub struct Brain {
-    pub model_path: String,
-    pub llama_exe: String,
     server_process: Option<Child>,
+    client: reqwest::blocking::Client,
 }
 
 impl Brain {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let mut exe_path = std::env::current_exe()?;
-        exe_path.pop();
-        if exe_path.ends_with("release") || exe_path.ends_with("debug") {
-            exe_path.pop();
-            exe_path.pop();
-        }
-
-        let model_path = exe_path
-            .join("model_gguf")
-            .join("animus_3b_q4.gguf")
-            .to_string_lossy()
-            .to_string();
-
-        let llama_exe = r"C:\llama\llama-server.exe".to_string();
-
-        println!("🧠 Motor ANIMUS: llama-server IceLake");
-        println!("📦 Cargando modelo en memoria...");
-
-        // Lanzar servidor
-        let child = Command::new(&llama_exe)
+    /// Lanza llama-server con Gemma 4. Usado por new() y reiniciar_servidor().
+    fn lanzar_proceso() -> Result<Child, Box<dyn std::error::Error>> {
+        let child = Command::new(LLAMA_SERVER_PATH)
             .args([
-                "-m", &model_path,
-                "--port", "8080",
+                "-m", MODEL_PATH,
+                "-c", "8192",              // contexto; con E2B Q4 cabe en los 4GB de la 3050
+                "-ngl", "99",              // todas las capas a GPU
+                "-t", "8",                 // hilos CPU para lo que no va a GPU
+                "--jinja",                 // aplica el chat template nativo de Gemma 4
+                "--temp", "1.0",           // sampling recomendado por Google para Gemma 4
+                "--top-p", "0.95",
+                "--top-k", "64",
                 "--host", "127.0.0.1",
-                "-n", "300",
+                "--port", "8081",
                 "--log-disable",
+                "--parallel", "1",
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("Error lanzando llama-server: {}", e))?;
+            .map_err(|e| format!("Error lanzando Gemma (llama-server): {}", e))?;
+        Ok(child)
+    }
 
-        // Esperar hasta que el servidor esté listo
-        print!("⏳ Inicializando servidor");
+    /// Espera a que /health responda ok. Devuelve true si el servidor está listo.
+    fn esperar_servidor() -> bool {
         let client = reqwest::blocking::Client::new();
-        let mut listo = false;
-        for _ in 0..60 {
-            std::thread::sleep(Duration::from_secs(2));
+        for _ in 0..30 {
+            thread::sleep(Duration::from_secs(2));
             print!(".");
-            if let Ok(resp) = client.get("http://127.0.0.1:8080/health").send() {
+            if let Ok(resp) = client.get(format!("{}/health", SERVER_URL)).send() {
                 if let Ok(json) = resp.json::<serde_json::Value>() {
                     if json["status"].as_str() == Some("ok") {
-                        listo = true;
-                        break;
+                        return true;
                     }
                 }
             }
         }
-        if listo {
+        false
+    }
+
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        println!("🧠 Motor ANIMUS: Gemma 4 E2B (Q4, GPU RTX 3050)");
+        println!("📦 Cargando modelo en memoria...");
+
+        let child = Self::lanzar_proceso()?;
+
+        print!("⏳ Inicializando servidor");
+        // Gemma Q4 en GPU carga en segundos; ya no hace falta el sleep de 15s de BitNet
+        thread::sleep(Duration::from_secs(3));
+
+        if Self::esperar_servidor() {
             println!(" ✅");
         } else {
             println!(" ⚠️ Timeout — servidor puede no estar listo");
         }
 
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(180))
+            .build()?;
+
         Ok(Brain {
-            model_path,
-            llama_exe,
             server_process: Some(child),
+            client,
         })
     }
 
+    fn sanitizar_prompt(prompt: &str) -> String {
+        prompt
+            .chars()
+            .filter(|c| {
+                // Conservar todo lo imprimible y útil; eliminar solo lo que rompe:
+                // caracteres de control (salvo salto de línea y tab) y el replacement char
+                (!c.is_control() || *c == '\n' || *c == '\t') && *c != '\u{FFFD}'
+            })
+            .collect::<String>()
+            .replace('\0', "")
+    }
+
     pub fn generate_native_report(
-        &mut self,
-        prompt: &str,
-        max_tokens: usize,
+    &mut self,
+    prompt: &str,
+    max_tokens: usize,
     ) -> Result<String, Box<dyn std::error::Error>> {
 
         println!("\n🎭 LA VOZ DE ANIMUS:");
         println!("-------------------------------------------");
 
-        let client = reqwest::blocking::Client::new();
+        let prompt_limpio = Self::sanitizar_prompt(prompt)
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+            .collect::<String>();
 
+        eprintln!("[CKPT 1] prompt sanitizado, {} chars", prompt_limpio.len());
+
+        // Template de Gemma 4 construido a mano, SIN el token <|think|>:
+        // el thinking jamás se activa y el modelo responde directo.
+        let prompt_gemma = format!(
+            "<|turn>user\n{}<turn|>\n<|turn>model\n",
+            prompt_limpio
+        );
+  
         let body = serde_json::json!({
-            "prompt": prompt,
+            "prompt": prompt_gemma,
             "n_predict": max_tokens,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "repeat_penalty": 1.2,
-            "seed": 42,
-            "stop": ["Pregunta:", "Usuario:", "[SIGNOS", "<|eot_id|>"]
+            "stop": ["<turn|>", "<|turn>"]
         });
 
-        let resp = client
-            .post("http://127.0.0.1:8080/completion")
-            .json(&body)
-            .timeout(Duration::from_secs(120))
-            .send()?
-            .json::<serde_json::Value>()?;
-        
-       
+        let mut intentos = 0;
+
+        eprintln!("[CKPT 2] enviando al servidor...");
+
+        let resp = loop {
+            match self.client
+                .post("http://127.0.0.1:8081/completion")
+                .json(&body)
+                .send()
+            {
+                Ok(r) => break r.json::<serde_json::Value>()?,
+                Err(e) if intentos < 3 => {
+                    intentos += 1;
+                    eprintln!("⚠️ Reintento {}/3: {}", intentos, e);
+                    thread::sleep(Duration::from_secs(3));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        eprintln!("[CKPT 3] respuesta recibida");
+
         let texto = resp["content"]
             .as_str()
             .unwrap_or("Sin respuesta.")
             .lines()
-            .filter(|l| !l.trim().starts_with("Exploración interna:"))
+            .filter(|l| {
+                !l.trim().starts_with("Exploración interna:")
+                && !l.trim().starts_with("===")
+                && !l.trim().starts_with("PROMPT")
+                && !l.trim().starts_with("FIN DEBUG")
+            })
             .collect::<Vec<_>>()
             .join("\n")
             .trim()
@@ -116,6 +167,21 @@ impl Brain {
         println!("-------------------------------------------");
 
         Ok(texto)
+    }
+
+    pub fn reiniciar_servidor(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(mut child) = self.server_process.take() {
+            let _ = child.kill();
+        }
+        let child = Self::lanzar_proceso()?;
+        self.server_process = Some(child);
+        thread::sleep(Duration::from_secs(3));
+        if Self::esperar_servidor() {
+            println!("🔄 Servidor ANIMUS reiniciado.");
+            Ok(())
+        } else {
+            Err("Timeout reiniciando servidor".into())
+        }
     }
 
     pub fn leer_signos_vitales() -> (f32, u64, u64) {
@@ -155,6 +221,7 @@ impl Brain {
         memory: &mut AnimusMemory,
         label: &str,
         content: &str,
+        source: Option<&str>,
     ) -> usize {
         let era = Utc::now().to_string();
         if let Some(pos) = memory.nodes.iter().position(|n| n.label == label) {
@@ -169,6 +236,7 @@ impl Brain {
                 era,
                 weight: 10.0,
                 connections: 1,
+                source: source.map(|s| s.to_string()),
             });
             new_idx
         }
@@ -179,7 +247,7 @@ impl Brain {
         label: &str,
         content: &str,
     ) {
-        let node_idx = Self::integrate_knowledge(memory, label, content);
+        let node_idx = Self::integrate_knowledge(memory, label, content, None);
         if node_idx != 0 {
             memory.edges.push(SerializableEdge {
                 from: 0,

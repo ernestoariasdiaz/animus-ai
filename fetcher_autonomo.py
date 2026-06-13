@@ -1,24 +1,46 @@
-﻿import sys
+import sys
 import json
 import random
 from scrapling import Fetcher
 
 URLS_POOL = [
-    "https://en.wikipedia.org/wiki/Financial_crisis",
-    "https://en.wikipedia.org/wiki/Economic_inequality",
+    # === NÚCLEO: Regulación financiera RD (el dominio que paga) ===
+    "https://sb.gob.do/regulacion/normativas-sb/",
+    "https://www.sb.gob.do/",
+    "https://sb.gob.do/estadisticas/",
+    "https://sb.gob.do/publicaciones/",
+    "https://www.bancentral.gov.do/a/d/2686-noticias",
+    "https://www.bancentral.gov.do/a/d/2532-sector-externo",
+    "https://www.bancentral.gov.do/a/d/2541-mercado-cambiario",
+    "https://www.bancentral.gov.do/a/d/2533-sector-real",
+    "https://www.bancentral.gov.do/a/d/2534-sector-fiscal",
+    "https://www.banreservas.com/noticias/",
+    "https://es.wikipedia.org/wiki/Econom%C3%ADa_de_la_Rep%C3%BAblica_Dominicana",
+    "https://es.wikipedia.org/wiki/Banco_Central_de_la_Rep%C3%BAblica_Dominicana",
+    # === Conceptos del oficio: regulación, riesgo, pagos ===
+    "https://en.wikipedia.org/wiki/Bank_regulation",
+    "https://en.wikipedia.org/wiki/Basel_III",
+    "https://en.wikipedia.org/wiki/Financial_regulation",
+    "https://en.wikipedia.org/wiki/Operational_risk",
+    "https://en.wikipedia.org/wiki/Anti-money_laundering",
+    "https://en.wikipedia.org/wiki/Know_your_customer",
+    "https://en.wikipedia.org/wiki/Regulatory_technology",
+    "https://en.wikipedia.org/wiki/ISO_8583",
     "https://en.wikipedia.org/wiki/Systemic_risk",
-    "https://en.wikipedia.org/wiki/Caribbean_Community",
-    "https://en.wikipedia.org/wiki/Economy_of_the_Dominican_Republic",
-    "https://en.wikipedia.org/wiki/Artificial_intelligence",
+    "https://en.wikipedia.org/wiki/Financial_crisis",
+    # === El voto de ANIMUS: su dieta intelectual (30%) ===
     "https://en.wikipedia.org/wiki/Knowledge_graph",
-    "https://en.wikipedia.org/wiki/Autonomous_agent",
     "https://en.wikipedia.org/wiki/Epistemology",
-    "https://en.wikipedia.org/wiki/Machine_learning",
+    "https://en.wikipedia.org/wiki/Metacognition",
+    "https://en.wikipedia.org/wiki/Retrieval-augmented_generation",
+    "https://en.wikipedia.org/wiki/Hallucination_(artificial_intelligence)",
+    "https://en.wikipedia.org/wiki/AI_alignment",
+    "https://en.wikipedia.org/wiki/Cybernetics",
+    "https://en.wikipedia.org/wiki/Complex_adaptive_system",
+    "https://en.wikipedia.org/wiki/Bounded_rationality",
+    "https://en.wikipedia.org/wiki/Intellectual_humility",
+    "https://en.wikipedia.org/wiki/Rust_(programming_language)",
     "https://en.wikipedia.org/wiki/Stoicism",
-    "https://en.wikipedia.org/wiki/Systems_thinking",
-    "https://en.wikipedia.org/wiki/Institutional_failure",
-    "https://en.wikipedia.org/wiki/Emergence",
-    "https://en.wikipedia.org/wiki/Complexity",
 ]
 
 def capturar_url(url):
@@ -38,7 +60,7 @@ if __name__ == "__main__":
     texto = capturar_url(url)
     result = {
         "url": url,
-        "episodic": texto[:2000],
+        "episodic": texto[:3000],
         "full": texto[:6000],
         "ok": len(texto) > 100
     }
