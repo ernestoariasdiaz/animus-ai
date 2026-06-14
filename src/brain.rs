@@ -22,7 +22,7 @@ impl Brain {
         let child = Command::new(LLAMA_SERVER_PATH)
             .args([
                 "-m", MODEL_PATH,
-                "-c", "8192",              // contexto; con E2B Q4 cabe en los 4GB de la 3050
+                "-c", "2048",              // contexto; con E2B Q4 cabe en los 4GB de la 3050
                 "-ngl", "99",              // todas las capas a GPU
                 "-t", "8",                 // hilos CPU para lo que no va a GPU
                 "--jinja",                 // aplica el chat template nativo de Gemma 4
@@ -43,19 +43,28 @@ impl Brain {
 
     /// Espera a que /health responda ok. Devuelve true si el servidor está listo.
     fn esperar_servidor() -> bool {
-        let client = reqwest::blocking::Client::new();
-        for _ in 0..30 {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        for _ in 0..15 {  // máximo 30 segundos (15 × 2s)
             thread::sleep(Duration::from_secs(2));
             print!(".");
-            if let Ok(resp) = client.get(format!("{}/health", SERVER_URL)).send() {
-                if let Ok(json) = resp.json::<serde_json::Value>() {
-                    if json["status"].as_str() == Some("ok") {
-                        return true;
+            match client.get(format!("{}/health", SERVER_URL))
+                .timeout(Duration::from_secs(3))
+                .send()
+            {
+                Ok(resp) => {
+                    if let Ok(json) = resp.json::<serde_json::Value>() {
+                        if json["status"].as_str() == Some("ok") {
+                            return true;
+                        }
                     }
                 }
+                Err(_) => continue,
             }
         }
-        false
+        false  // timeout — el loop externo maneja el Err
     }
 
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
@@ -137,12 +146,27 @@ impl Brain {
                 .send()
             {
                 Ok(r) => break r.json::<serde_json::Value>()?,
-                Err(e) if intentos < 3 => {
+                Err(e) if intentos < 2 => {
                     intentos += 1;
                     eprintln!("⚠️ Reintento {}/3: {}", intentos, e);
                     thread::sleep(Duration::from_secs(3));
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    eprintln!("⚠️ Reintento 3/3: {}", e);
+                    eprintln!("🔄 Servidor no responde — reiniciando...");
+                    let _ = self.reiniciar_servidor();
+                    thread::sleep(Duration::from_secs(8));
+                    intentos += 1;
+                    // Un intento más tras el reinicio
+                    match self.client
+                        .post("http://127.0.0.1:8081/completion")
+                        .json(&body)
+                        .send()
+                    {
+                        Ok(r) => break r.json::<serde_json::Value>()?,
+                        Err(e) => return Err(e.into()),
+                    }
+                }
             }
         };
 
@@ -171,8 +195,16 @@ impl Brain {
 
     pub fn reiniciar_servidor(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(mut child) = self.server_process.take() {
+            let pid = child.id();
             let _ = child.kill();
+            let _ = child.wait();
+            // Matar por PID explícito como respaldo
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .output();
         }
+        // Esperar que el puerto quede libre
+        thread::sleep(Duration::from_secs(3));
         let child = Self::lanzar_proceso()?;
         self.server_process = Some(child);
         thread::sleep(Duration::from_secs(3));

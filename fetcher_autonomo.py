@@ -6,6 +6,7 @@ from scrapling import Fetcher
 URLS_POOL = [
     # === NÚCLEO: Regulación financiera RD (el dominio que paga) ===
     "https://sb.gob.do/regulacion/normativas-sb/",
+    "https://sb.gob.do/publicaciones/publicaciones-tecnicas/informe-trimestral-de-desempeno-del-sistema-financiero-a-marzo-2026/",
     "https://www.sb.gob.do/",
     "https://sb.gob.do/estadisticas/",
     "https://sb.gob.do/publicaciones/",
@@ -15,7 +16,6 @@ URLS_POOL = [
     "https://www.bancentral.gov.do/a/d/2533-sector-real",
     "https://www.bancentral.gov.do/a/d/2534-sector-fiscal",
     "https://www.banreservas.com/noticias/",
-    "https://es.wikipedia.org/wiki/Econom%C3%ADa_de_la_Rep%C3%BAblica_Dominicana",
     "https://es.wikipedia.org/wiki/Banco_Central_de_la_Rep%C3%BAblica_Dominicana",
     # === Conceptos del oficio: regulación, riesgo, pagos ===
     "https://en.wikipedia.org/wiki/Bank_regulation",
@@ -41,6 +41,7 @@ URLS_POOL = [
     "https://en.wikipedia.org/wiki/Intellectual_humility",
     "https://en.wikipedia.org/wiki/Rust_(programming_language)",
     "https://en.wikipedia.org/wiki/Stoicism",
+    
 ]
 
 def capturar_url(url):

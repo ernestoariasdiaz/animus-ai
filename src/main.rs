@@ -14,6 +14,7 @@ use std::thread;
 use std::process::Stdio;
 use std::env;
 use crate::memory::SerializableNode;
+use rand::seq::SliceRandom;
 
 
 #[derive(Parser, Debug)]
@@ -72,6 +73,62 @@ fn construir_prompt(q: &str, memory: &AnimusMemory) -> String {
         q
     )
 }
+
+fn generar_autocenso(memory: &AnimusMemory, ciclo: u32) -> String {
+    let total = memory.nodes.len();
+    
+    // Contar por familia de etiqueta
+    let mut familias: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for n in &memory.nodes {
+        let familia = if n.label.starts_with("Reflexion:") {
+            "Reflexion"
+        } else if n.label.starts_with("Web:") {
+            "Web"
+        } else if n.label.starts_with("Origen:") {
+            "Origen"
+        } else if n.label.starts_with("Autocenso:") {
+            "Autocenso"
+        } else {
+            "Otros"
+        };
+        *familias.entry(familia.to_string()).or_insert(0) += 1;
+    }
+
+    // Top 5 nodos por peso (excluyendo familias de ruido)
+    let mut por_peso: Vec<(&str, f64)> = memory.nodes.iter()
+        .filter(|n| !n.label.starts_with("Origen:") 
+            && !n.label.starts_with("paradigm_shift")
+            && !n.label.starts_with("Autocenso:")
+            && n.content.len() > 60)
+        .map(|n| (n.label.as_str(), n.weight))
+        .collect();
+    por_peso.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let top5: Vec<String> = por_peso.iter()
+        .take(5)
+        .map(|(l, _)| l.chars().take(60).collect::<String>())
+        .collect();
+
+    // Nodos Web con fuente real
+    let fuentes_web = memory.nodes.iter()
+        .filter(|n| n.label.starts_with("Web:"))
+        .count();
+
+    format!(
+        "Autocenso ciclo {}: El grafo contiene {} nodos totales. \
+        Familias — Reflexion: {}, Web: {}, Origen: {}, Otros: {}. \
+        Fuentes web integradas: {}. \
+        Conceptos de mayor peso: {}.",
+        ciclo,
+        total,
+        familias.get("Reflexion").unwrap_or(&0),
+        familias.get("Web").unwrap_or(&0),
+        familias.get("Origen").unwrap_or(&0),
+        familias.get("Otros").unwrap_or(&0),
+        fuentes_web,
+        top5.join(" | ")
+    )
+}
+
 fn procesar_query(
     q: &str,
     memory: &mut AnimusMemory,
@@ -252,6 +309,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let intervalo_valor: u32 = 25;
 
+        let intervalo_autocenso: u32 = 37;
+
         println!("Modo autonomo activo. Ciclo: {}. Ctrl+C para detener.\n", ciclo);
 
         let mut gaps_recientes: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -259,6 +318,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             ciclo += 1;
             fs::write(archivo_ciclos, ciclo.to_string())?;
+
+            // -- PRIORIDAD 0: PDFs pendientes --
+            let pdf_dir = "pdfs_pendientes";
+            let pdf_done = "pdfs_procesados";
+            fs::create_dir_all(pdf_dir).ok();
+            fs::create_dir_all(pdf_done).ok();
+
+            if let Ok(entries) = fs::read_dir(pdf_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
+                        println!("📄 PDF detectado: {:?}", path.file_name().unwrap());
+                        let output = std::process::Command::new("python")
+                            .args(["pdf_processor.py", path.to_str().unwrap()])
+                            .output();
+                        if let Ok(out) = output {
+                            let json_str = String::from_utf8_lossy(&out.stdout);
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                if val["ok"].as_bool().unwrap_or(false) {
+                                    let texto = val["episodic"].as_str().unwrap_or("");
+                                    let nombre = path.file_stem()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("pdf");
+                                    let label = format!("PDF: {}", nombre);
+                                    let resumen: String = texto.chars().take(500).collect();
+                                    let tarea_pdf = format!(
+                                        "Extrae 3 o 4 hechos concretos y verificables de este documento PDF. \
+                                        Solo lo que el texto afirma explicitamente: {}",
+                                        resumen
+                                    );
+                                    // Integrar el texto crudo
+                                    brain::Brain::integrate_knowledge(
+                                        &mut memory, &label, texto, 
+                                        Some(path.to_str().unwrap())
+                                    );
+                                    memory.save().ok();
+                                    println!("📄 PDF integrado: {}", label);
+                                    // Razonar sobre el contenido
+                                    match procesar_query(&tarea_pdf, &mut memory, &mut motor) {
+                                        Ok(_) => println!("🧠 Patrones PDF extraídos."),
+                                        Err(e) => println!("⚠️ Error procesando PDF: {}", e),
+                                    }
+                                    // Mover a procesados
+                                    let dest = format!("{}/{}", pdf_done, 
+                                        path.file_name().unwrap().to_str().unwrap());
+                                    fs::rename(&path, &dest).ok();
+                                    println!("✅ PDF movido a procesados: {}", dest);
+                                }
+                            }
+                        }
+                        break; // un PDF por ciclo
+                    }
+                }
+            }
 
             // -- Ciclo de valor cada 25 ciclos: ANIMUS propone oportunidades --
             if ciclo % intervalo_valor == 0 {
@@ -277,13 +390,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join("\n");
 
-                // Contexto: los 5 conceptos de mayor peso del grafo
-                let mut conceptos: Vec<(String, f64)> = memory.nodes.iter()
+                let mut por_peso: Vec<(String, f64)> = memory.nodes.iter()
+                    .filter(|n| {
+                        !n.label.starts_with("Web:")
+                        && !n.label.starts_with("Origen:")
+                        && !n.label.starts_with("paradigm_shift")
+                        && n.content.len() > 60
+                    })
                     .map(|n| (n.label.clone(), n.weight))
                     .collect();
-                conceptos.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-                let conceptos: String = conceptos.iter().take(5)
-                    .map(|(l, _)| l.chars()
+                por_peso.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+                let mut rng = rand::thread_rng();
+                let anclas: Vec<String> = por_peso.iter().take(2)
+                    .map(|(l, _)| l.clone()).collect();
+                let aleatorios: Vec<String> = por_peso.iter().skip(2)
+                    .map(|(l, _)| l.clone())
+                    .collect::<Vec<_>>();
+                let mut muestra_aleatoria = aleatorios.clone();
+                muestra_aleatoria.shuffle(&mut rng);
+
+                let conceptos: String = anclas.iter()
+                    .chain(muestra_aleatoria.iter().take(3))
+                    .map(|l| l.chars()
                         .filter(|c| !matches!(*c, '{' | '}' | '<' | '>' | '\\' | '`' | '~' | '|'))
                         .collect::<String>())
                     .collect::<Vec<_>>()
@@ -330,6 +459,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 thread::sleep(Duration::from_secs(30));
                 continue;
             }
+
+            // -- Ciclo de autocenso cada 50 ciclos --
+            if ciclo % intervalo_autocenso == 0 {
+                println!("\n🔭 CICLO DE AUTOCENSO #{} — Generando espejo...\n", ciclo);
+                let contenido = generar_autocenso(&memory, ciclo);
+                let etiqueta = format!("Autocenso: ciclo_{}", ciclo);
+                
+                // Solo integrar si no existe ya (el guard de procesar_query no aplica aquí)
+                if !memory.nodes.iter().any(|n| n.label == etiqueta) {
+                    memory.agregar_recuerdo(&contenido, &etiqueta);
+                    memory.save().ok();
+                    println!("🔭 Autocenso integrado: {} chars", contenido.len());
+                    println!("   {}", &contenido[..contenido.len().min(200)]);
+                }
+                continue;
+            }
+
 
             // -- Ciclo de sintesis cada 10 ciclos normales --
             if ciclo % intervalo_sintesis == 0 {
@@ -480,6 +626,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .output();
                 thread::sleep(Duration::from_secs(5));
                 ciclos_desde_reinicio_fetcher = 0;
+            }
+
+            // Cada 15 ciclos de scraping, consultar API de la SB
+            if ciclos_desde_reinicio_fetcher % 15 == 0 {
+                let output = std::process::Command::new("python")
+                    .arg("fetcher_sb_api.py")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .and_then(|mut child| {
+                        thread::sleep(Duration::from_secs(15));
+                        match child.try_wait() {
+                            Ok(Some(_)) => child.wait_with_output(),
+                            _ => {
+                                let _ = child.kill();
+                                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "api timeout"))
+                            }
+                        }
+                    });
+                
+                if let Ok(out) = output {
+                    let json_str = String::from_utf8_lossy(&out.stdout);
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                        if val["ok"].as_bool().unwrap_or(false) {
+                            let url = val["url"].as_str().unwrap_or("api://sb");
+                            let episodic = val["episodic"].as_str().unwrap_or("");
+                            let label = format!("API-SB: indicadores_{}", 
+                                chrono::Local::now().format("%Y-%m"));
+                            brain::Brain::integrate_knowledge(&mut memory, &label, episodic, Some(url));
+                            memory.save().ok();
+                            println!("📊 API SB integrada: {}", label);
+                            
+                            let tarea_api = format!(
+                                "Extrae 3 hechos concretos y verificables de estos indicadores financieros \
+                                del sistema bancario dominicano. Solo cifras y datos que el texto afirma \
+                                explicitamente: {}",
+                                &episodic[..episodic.len().min(500)]
+                            );
+                            match procesar_query(&tarea_api, &mut memory, &mut motor) {
+                                Ok(_) => println!("🧠 Indicadores procesados."),
+                                Err(e) => println!("⚠️ Error: {}", e),
+                            }
+                        }
+                    }
+                }
             }
 
             // -- PRIORIDAD 3: Sin gaps — scrapear fuente web --
