@@ -129,6 +129,8 @@ fn generar_autocenso(memory: &AnimusMemory, ciclo: u32) -> String {
     )
 }
 
+
+
 fn procesar_query(
     q: &str,
     memory: &mut AnimusMemory,
@@ -305,7 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(0);
 
         let mut ciclo = ciclo_actual;
-        let intervalo_sintesis: u32 = 10;
+        let intervalo_sintesis: u32 = 9999;
 
         let intervalo_valor: u32 = 25;
 
@@ -330,45 +332,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
                         println!("📄 PDF detectado: {:?}", path.file_name().unwrap());
-                        let output = std::process::Command::new("python")
+                        let dest = format!("{}/{}", pdf_done,
+                            path.file_name().unwrap().to_str().unwrap());
+
+                        let mut child = std::process::Command::new("python")
                             .args(["pdf_processor.py", path.to_str().unwrap()])
-                            .output();
-                        if let Ok(out) = output {
-                            let json_str = String::from_utf8_lossy(&out.stdout);
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                                if val["ok"].as_bool().unwrap_or(false) {
-                                    let texto = val["episodic"].as_str().unwrap_or("");
-                                    let nombre = path.file_stem()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or("pdf");
-                                    let label = format!("PDF: {}", nombre);
-                                    let resumen: String = texto.chars().take(500).collect();
-                                    let tarea_pdf = format!(
-                                        "Extrae 3 o 4 hechos concretos y verificables de este documento PDF. \
-                                        Solo lo que el texto afirma explicitamente: {}",
-                                        resumen
-                                    );
-                                    // Integrar el texto crudo
-                                    brain::Brain::integrate_knowledge(
-                                        &mut memory, &label, texto, 
-                                        Some(path.to_str().unwrap())
-                                    );
-                                    memory.save().ok();
-                                    println!("📄 PDF integrado: {}", label);
-                                    // Razonar sobre el contenido
-                                    match procesar_query(&tarea_pdf, &mut memory, &mut motor) {
-                                        Ok(_) => println!("🧠 Patrones PDF extraídos."),
-                                        Err(e) => println!("⚠️ Error procesando PDF: {}", e),
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::null())
+                            .spawn()
+                            .ok();
+
+                        if let Some(ref mut c) = child {
+                            thread::sleep(Duration::from_secs(30));
+                            match c.try_wait() {
+                                Ok(Some(_)) => {
+                                    // Terminó — tomar ownership del Child para leer output
+                                    if let Some(c_owned) = child.take() {
+                                        if let Ok(out) = c_owned.wait_with_output() {
+                                            let json_str = String::from_utf8_lossy(&out.stdout);
+                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                                if val["ok"].as_bool().unwrap_or(false) {
+                                                    let texto = val["episodic"].as_str().unwrap_or("");
+                                                    let nombre = path.file_stem()
+                                                        .and_then(|n| n.to_str())
+                                                        .unwrap_or("pdf");
+                                                    let label = format!("PDF: {}", nombre);
+                                                    let resumen: String = texto.chars().take(500).collect();
+                                                    let tarea_pdf = format!(
+                                                        "Extrae 3 o 4 hechos concretos y verificables \
+                                                        de este documento. Solo lo que el texto afirma \
+                                                        explicitamente: {}",
+                                                        resumen
+                                                    );
+                                                    brain::Brain::integrate_knowledge(
+                                                        &mut memory, &label, texto,
+                                                        Some(path.to_str().unwrap())
+                                                    );
+                                                    memory.save().ok();
+                                                    println!("📄 PDF integrado: {}", label);
+                                                    match procesar_query(&tarea_pdf, &mut memory, &mut motor) {
+                                                        Ok(_) => println!("🧠 Patrones PDF extraídos."),
+                                                        Err(e) => println!("⚠️ Error: {}", e),
+                                                    }
+                                                } else {
+                                                    println!("⚠️ PDF sin contenido útil.");
+                                                }
+                                            }
+                                        }
                                     }
-                                    // Mover a procesados
-                                    let dest = format!("{}/{}", pdf_done, 
-                                        path.file_name().unwrap().to_str().unwrap());
-                                    fs::rename(&path, &dest).ok();
-                                    println!("✅ PDF movido a procesados: {}", dest);
+                                }
+                                                                _ => {
+                                    // Timeout — matar proceso
+                                    let _ = c.kill();
+                                    println!("⚠️ PDF timeout.");
                                 }
                             }
                         }
-                        break; // un PDF por ciclo
+                        // Mover siempre — éxito, fallo o timeout
+                        thread::sleep(Duration::from_secs(1));
+                        fs::rename(&path, &dest).ok();
+                        println!("✅ PDF movido: {}", dest);
+                        break;
                     }
                 }
             }
@@ -636,7 +660,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .stderr(Stdio::null())
                     .spawn()
                     .and_then(|mut child| {
-                        thread::sleep(Duration::from_secs(15));
+                        thread::sleep(Duration::from_secs(60));
                         match child.try_wait() {
                             Ok(Some(_)) => child.wait_with_output(),
                             _ => {
