@@ -234,19 +234,39 @@ impl Brain {
             .map(|w| w.to_lowercase())
             .collect();
 
-        memory
-            .nodes
-            .iter()
+        // Prioridad 1: PDF con TODAS las palabras clave en la etiqueta
+        let pdf_exacto: Option<String> = memory.nodes.iter()
+            .filter(|n| n.label.starts_with("PDF:"))
             .filter(|n| {
-                if n.label.starts_with("Origen:") || n.label.starts_with("nacimiento") {
+                let label = n.label.to_lowercase();
+                palabras_query.iter()
+                    .filter(|pq| pq.len() >= 5) // solo palabras largas
+                    .all(|pq| label.contains(pq.as_str()))
+            })
+            .map(|n| n.content.clone())
+            .next();
+
+        // Prioridad 2: búsqueda semántica normal en contenido
+        let por_contenido: Vec<String> = memory.nodes.iter()
+            .rev()  // ← invertir: nodos más recientes primero
+            .filter(|n| {
+                if n.label.starts_with("Origen:") 
+                    || n.label.starts_with("nacimiento")
+                    || n.content.to_lowercase().contains("motor candle")
+                {
                     return false;
                 }
                 let c = n.content.to_lowercase();
                 palabras_query.iter().any(|pq| c.contains(pq))
             })
-            .take(3)
+            .take(2)
             .map(|n| n.content.clone())
-            .collect()
+            .collect();
+
+        let mut resultados: Vec<String> = pdf_exacto.into_iter().collect();
+        resultados.extend(por_contenido);
+        resultados.truncate(3);
+        resultados
     }
 
     pub fn integrate_knowledge(

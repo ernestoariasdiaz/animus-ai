@@ -45,7 +45,7 @@ fn construir_prompt(q: &str, memory: &AnimusMemory) -> String {
             && !s.contains("mod memory")
             && !s.contains("impl ")
         })
-        .take(1)  // ← ahora después del filter
+        .take(1)
         .cloned()
         .collect::<Vec<_>>()
         .join(" ")
@@ -53,23 +53,52 @@ fn construir_prompt(q: &str, memory: &AnimusMemory) -> String {
         .filter(|c| !matches!(*c, '{' | '}' | '<' | '>' | '\\' | '`' | '^' | '~' | '|'))
         .collect();
 
-    // Prompt era-Gemma: en español (el modelo razona en el idioma del prompt),
-    // con instrucciones explícitas de estilo que BitNet ignoraba pero Gemma respeta.
-        format!(
-        "Eres ANIMUS, un sistema de conocimiento autónomo que construye su propio grafo de memoria.\n\
-        Contexto recuperado de tu memoria: {}\n\
-        Pregunta: {}\n\
-        Instrucciones: razona lo que necesites, pero tu respuesta final debe ir \
-        OBLIGATORIAMENTE entre los marcadores [RESPUESTA] y [/RESPUESTA]: \
-        un solo párrafo denso en español, en prosa continua, sin markdown, \
-        sin listas y sin encabezados., \
-        si tu memoria y tu contexto no contienen información sobre lo preguntado, \
-        dilo explícitamente dentro de los marcadores y no especules sobre el contenido, \
-        Si te piden datos o hechos concretos que tu memoria y contexto no contienen, \
-        dilo explícitamente y no especules. Pero si te piden tu opinión, preferencia, \
-        propuesta o razonamiento, respóndelo con criterio propio basándote en lo que \
-        sí sabes, dejando claro que es tu juicio y no un dato.", 
+
+    // Buscar PDF relevante por palabras de la pregunta en la etiqueta
+    let pdf_relevante = memory.nodes.iter()
+        .filter(|n| n.label.starts_with("PDF:"))
+        .filter(|n| {
+            let label_lower = n.label.to_lowercase();
+            q.split_whitespace()
+                .filter(|w| w.len() >= 4)
+                .any(|w| label_lower.contains(&w.to_lowercase()))
+        })
+        .max_by_key(|n| {
+            let label_lower = n.label.to_lowercase();
+            q.split_whitespace()
+                .filter(|w| w.len() >= 4)
+                .filter(|w| label_lower.contains(&w.to_lowercase()))
+                .count()
+        })
+        .map(|n| {
+            let resumen: String = n.content.chars().take(600)
+                .filter(|c| !matches!(*c, '{' | '}' | '<' | '>' | '\\' | '`' | '^' | '~' | '|'))
+                .collect();
+            format!("Documento PDF relevante encontrado — {}: {}", n.label, resumen)
+        })
+        .unwrap_or_default();  
+    // Inyectar el nodo PDF más reciente como contexto adicional
+    let ultimo_pdf = memory.nodes.iter().rev()
+        .find(|n| n.label.starts_with("PDF:"))
+        .map(|n| {
+            let resumen: String = n.content.chars().take(300)
+                .filter(|c| !matches!(*c, '{' | '}' | '<' | '>' | '\\' | '`' | '^' | '~' | '|'))
+                .collect();
+            format!("Documento reciente procesado — {}: {}", n.label, resumen)
+        })
+        .unwrap_or_default();
+
+    format!(
+        "Eres ANIMUS, un sistema de conocimiento autónomo.\n\
+        Contexto: {}\n\
+        {}\n\
+        {}\n\
+        IMPORTANTE: Responde en prosa continua en español, SIN markdown, SIN negritas, \
+        SIN listas, SIN encabezados. Un solo párrafo denso.\n\
+        Pregunta: {}",
         contexto,
+        ultimo_pdf,
+        pdf_relevante,
         q
     )
 }
@@ -307,7 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(0);
 
         let mut ciclo = ciclo_actual;
-        let intervalo_sintesis: u32 = 9999;
+        let intervalo_sintesis: u32 = 10;
 
         let intervalo_valor: u32 = 25;
 
@@ -472,6 +501,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if fs::write(&archivo, &propuesta).is_ok() {
                                 println!("💡 Propuesta de valor guardada: {}", archivo);
                             }
+
+                            // Integrar al grafo para que ANIMUS recuerde sus propias propuestas
+                            let etiqueta_propuesta = format!("Propuesta-Valor: {}", fecha);
+                            if !memory.nodes.iter().any(|n| n.label == etiqueta_propuesta) {
+                                memory.agregar_recuerdo(&propuesta, &etiqueta_propuesta);
+                                memory.save().ok();
+                                println!("🧠 Propuesta integrada al grafo como memoria.");
+                            }
                         } else {
                             println!("⚠️ Propuesta descartada (sin marcadores o demasiado corta).");
                         }
@@ -495,7 +532,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     memory.agregar_recuerdo(&contenido, &etiqueta);
                     memory.save().ok();
                     println!("🔭 Autocenso integrado: {} chars", contenido.len());
-                    println!("   {}", &contenido[..contenido.len().min(200)]);
+                    println!("   {}", contenido.chars().take(200).collect::<String>());
                 }
                 continue;
             }
@@ -598,8 +635,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .nodes
                 .iter()
                 .filter(|n| n.weight > 1.0 && n.weight < 50000.0
-                    && !n.label.starts_with("Web:")
-                    && !n.label.starts_with("Reflexion:")
                     && !n.label.starts_with("Origen:")
                     && !n.label.starts_with("Mi Origen")
                     && !n.label.starts_with('¿'))
