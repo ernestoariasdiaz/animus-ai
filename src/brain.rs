@@ -135,8 +135,6 @@ impl Brain {
             "stop": ["<turn|>", "<|turn>"]
         });
 
-        let mut intentos = 0;
-
         eprintln!("[CKPT 2] enviando al servidor...");
 
         let resp = loop {
@@ -146,17 +144,11 @@ impl Brain {
                 .send()
             {
                 Ok(r) => break r.json::<serde_json::Value>()?,
-                Err(e) if intentos < 2 => {
-                    intentos += 1;
-                    eprintln!("⚠️ Reintento {}/3: {}", intentos, e);
-                    thread::sleep(Duration::from_secs(3));
-                }
                 Err(e) => {
-                    eprintln!("⚠️ Reintento 3/3: {}", e);
-                    eprintln!("🔄 Servidor no responde — reiniciando...");
+                    eprintln!("⚠️ Servidor no responde: {}", e);
+                    eprintln!("🔄 Reiniciando...");
                     let _ = self.reiniciar_servidor();
                     thread::sleep(Duration::from_secs(8));
-                    intentos += 1;
                     // Un intento más tras el reinicio
                     match self.client
                         .post("http://127.0.0.1:8081/completion")

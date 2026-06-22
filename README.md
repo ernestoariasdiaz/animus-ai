@@ -2,14 +2,16 @@
 
 ### Autonomous Network for Intelligence, Memory, and Understanding Systems
 
-> \*\*Honest reconstruction of an autonomous knowledge system.\*\*  
+> \\\*\\\*Honest reconstruction of an autonomous knowledge system.\\\*\\\*  
 > This version corrects metric inflation found in v3.0, documents a complete engine migration, and introduces a four-layer epistemic honesty architecture.
 
-**Author:** Ernesto Antonio Arias Díaz — Independent Researcher, Santo Domingo, Dominican Republic  
-**Paper (EN):** [Zenodo DOI: 10.5281/zenodo.18932137](https://doi.org/10.5281/zenodo.18932137)  
-**Status:** Active — running autonomously on Dell Precision 7610, RTX 3050, Windows 11
+**\*\*Author:\*\* Ernesto Antonio Arias Díaz — Independent Researcher, Santo Domingo, Dominican Republic**  
 
-\---
+**\*\*Paper (EN/ES):\*\* \[Zenodo DOI: 10.5281/zenodo.20674981](https://doi.org/10.5281/zenodo.20674981)**  
+
+**\*\*Repository:\*\* \[github.com/ernestoariasdiaz/animus-ai](https://github.com/ernestoariasdiaz/animus-ai)**  
+
+**\*\*Status:\*\* Active — running autonomously on Dell Precision 7610, RTX 3050, Windows 11**---
 
 ## What ANIMUS Is
 
@@ -29,7 +31,7 @@ After audit: **911 verified unique nodes**.
 
 Root causes:
 
-* `agregar\_recuerdo()` had no label uniqueness guard — every call appended unconditionally
+* `agregar\\\_recuerdo()` had no label uniqueness guard — every call appended unconditionally
 * Gap nodes were never weighted up after investigation — the same gaps were re-selected indefinitely (one topic investigated 65 times across sessions)
 
 ### Engine Migration History
@@ -45,7 +47,7 @@ Root causes:
 Content cannot enter the graph unless it passes all four layers:
 
 1. **Manual template without `<|think|>`** — Gemma 4's reasoning channel is never activated; the model responds directly without routing ambiguity
-2. **Marker contract** — every response must contain `\[RESPUESTA]...\[/RESPUESTA]`; content outside is discarded
+2. **Marker contract** — every response must contain `\\\[RESPUESTA]...\\\[/RESPUESTA]`; content outside is discarded
 3. **`rfind()` extraction** — takes the *last* occurrence of the closing marker, immune to the model mentioning markers in its own reasoning
 4. **Validation guard** — empty, short, or reasoning-contaminated responses return `Err()` and are never integrated
 
@@ -55,7 +57,7 @@ Content cannot enter the graph unless it passes all four layers:
 * UTF-8 sanitization: replaced allowlist (7 characters) with denylist (control chars only) — Gemma handles full UTF-8 without degradation
 * HTTP client lifecycle: moved from per-call to per-`Brain` instance, eliminating the resource leak that caused \~8h freezes
 * Gap weight increment: investigated gaps get `weight += 10.0`, preventing indefinite re-selection
-* Uniqueness guard: `agregar\_recuerdo()` now rejects duplicate labels before writing
+* Uniqueness guard: `agregar\\\_recuerdo()` now rejects duplicate labels before writing
 
 \---
 
@@ -65,7 +67,7 @@ Content cannot enter the graph unless it passes all four layers:
 ┌─────────────────────────────────────────────────────┐
 │                  ANIMUS Autonomous Loop              │
 │                                                     │
-│  Priority 1: External tasks (tareas\_pendientes.txt) │
+│  Priority 1: External tasks (tareas\\\_pendientes.txt) │
 │  Priority 2: Gap investigation (episodic graph)     │
 │  Priority 3: Web scraping (32-URL pool)             │
 │                                                     │
@@ -82,7 +84,7 @@ Content cannot enter the graph unless it passes all four layers:
                   ▼
 ┌─────────────────────────────────────────────────────┐
 │           Episodic Memory Graph (911 nodes)         │
-│              animus\_memory.json                     │
+│              animus\\\_memory.json                     │
 │  Nodes: concepts | Edges: validated connections     │
 │  Provenance: source URLs persisted across restarts  │
 └─────────────────────────────────────────────────────┘
@@ -101,18 +103,18 @@ Content cannot enter the graph unless it passes all four layers:
 ### Prerequisites
 
 * Rust (stable, MSVC toolchain on Windows)
-* Python 3.x with `scrapling\[fetchers]`
-* llama.cpp build with CUDA (`llama-b\*\*\*\*-bin-win-cuda-\*.zip` + cudart zip)
-* Gemma 4 E2B GGUF (`UD-Q4\_K\_XL` variant recommended for 4GB VRAM)
+* Python 3.x with `scrapling\\\[fetchers]`
+* llama.cpp build with CUDA (`llama-b\\\*\\\*\\\*\\\*-bin-win-cuda-\\\*.zip` + cudart zip)
+* Gemma 4 E2B GGUF (`UD-Q4\\\_K\\\_XL` variant recommended for 4GB VRAM)
 
 ### Configuration
 
 Edit the constants at the top of `src/brain.rs`:
 
 ```rust
-const LLAMA\_SERVER\_PATH: \&str = r"C:\\path\\to\\llama-server.exe";
-const MODEL\_PATH: \&str = r"C:\\path\\to\\gemma-4-E2B-it-UD-Q4\_K\_XL.gguf";
-const SERVER\_URL: \&str = "http://127.0.0.1:8081";
+const LLAMA\\\_SERVER\\\_PATH: \\\&str = r"C:\\\\path\\\\to\\\\llama-server.exe";
+const MODEL\\\_PATH: \\\&str = r"C:\\\\path\\\\to\\\\gemma-4-E2B-it-UD-Q4\\\_K\\\_XL.gguf";
+const SERVER\\\_URL: \\\&str = "http://127.0.0.1:8081";
 ```
 
 ### Build
@@ -125,22 +127,22 @@ cargo build --release
 
 ```powershell
 # Single query (model answers, node integrated into graph)
-.\\target\\release\\animus\_rust.exe --query "your question here"
+.\\\\target\\\\release\\\\animus\\\_rust.exe --query "your question here"
 
 # Autonomous loop (runs indefinitely, Ctrl+C to stop)
-.\\target\\release\\animus\_rust.exe --autonomous
+.\\\\target\\\\release\\\\animus\\\_rust.exe --autonomous
 
 # Add external tasks while loop is running
-Add-Content .\\tareas\_pendientes.txt "your task here"
+Add-Content .\\\\tareas\\\_pendientes.txt "your task here"
 ```
 
-> \*\*Important:\*\* Never run `--query` and `--autonomous` simultaneously against the same `animus\_memory.json`. Last writer wins — the other session's nodes will be lost. A file-lock mechanism is not yet implemented.
+> \\\*\\\*Important:\\\*\\\* Never run `--query` and `--autonomous` simultaneously against the same `animus\\\_memory.json`. Last writer wins — the other session's nodes will be lost. A file-lock mechanism is not yet implemented.
 
 \---
 
 ## Value Cycle
 
-Every 25 autonomous cycles, ANIMUS generates a business opportunity hypothesis using a structured `PROBLEM / EVIDENCE / FIRST STEP` format. Proposals are saved to `propuestas/valor\_<timestamp>.md` and never written to the main graph (to prevent speculation from contaminating knowledge).
+Every 25 autonomous cycles, ANIMUS generates a business opportunity hypothesis using a structured `PROBLEM / EVIDENCE / FIRST STEP` format. Proposals are saved to `propuestas/valor\\\_<timestamp>.md` and never written to the main graph (to prevent speculation from contaminating knowledge).
 
 The evidence clause requires proposals to cite web sources only — internal graph concepts are context, not evidence.
 
@@ -185,17 +187,17 @@ animus-ai/
 │   ├── inspector.rs     # Graph inspection utilities
 │   ├── scraper.rs       # Web scraping helpers
 │   └── voz.rs           # Voice/wisdom mode
-├── fetcher\_autonomo.py  # Web scraper (32-URL pool, scrapling)
+├── fetcher\\\_autonomo.py  # Web scraper (32-URL pool, scrapling)
 ├── Cargo.toml
 └── README.md
 ```
 
 Files **not** in the repository (personal/operational):
 
-* `animus\_memory.json` — your graph (personal knowledge state)
+* `animus\\\_memory.json` — your graph (personal knowledge state)
 * `propuestas/` — generated value proposals
 * `autorretrato/` — cycle self-portraits
-* `ciclos\_autonomos.txt`, `tareas\_pendientes.txt` — operational state
+* `ciclos\\\_autonomos.txt`, `tareas\\\_pendientes.txt` — operational state
 
 \---
 
@@ -216,12 +218,12 @@ Files **not** in the repository (personal/operational):
 ```bibtex
 @misc{arias2026animus,
   title  = {ANIMUS v4.0: Honest Reconstruction of an Autonomous Knowledge System},
-  author = {Arias D\\'iaz, Ernesto Antonio},
+  author = {Arias D\\\\'iaz, Ernesto Antonio},
   year   = {2026},
   month  = {June},
-  doi    = {10.5281/zenodo.18932137},
-  url    = {https://doi.org/10.5281/zenodo.18932137}
-}
+  doi    = {10.5281/zenodo.20674981},
+
+&#x20; url    = {https://doi.org/10.5281/zenodo.20674981}
 ```
 
 \---

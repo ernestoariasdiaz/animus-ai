@@ -21,6 +21,7 @@ debug_output.txt
 check_dupes.py
 deduplicar.py
 reparar.py
+fetcher_sb_api.py
 fix_fpga.py
 ingerir_fpga.py
 animus_memory.json.bak

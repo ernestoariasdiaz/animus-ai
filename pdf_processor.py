@@ -1,13 +1,14 @@
 import sys
 import json
 import pathlib
+import unicodedata
+sys.stdout.reconfigure(encoding='utf-8')
 
 def procesar_pdf(ruta):
     import fitz  # pymupdf
     texto = ""
     try:
         doc = fitz.open(ruta)
-        # Máximo 15 páginas, pero rápido
         paginas = min(len(doc), 15)
         for i in range(paginas):
             t = doc[i].get_text()
@@ -18,6 +19,7 @@ def procesar_pdf(ruta):
         doc.close()
     except Exception as e:
         return ""
+    texto = unicodedata.normalize('NFC', texto)
     return texto.strip()
 
 if __name__ == "__main__":
@@ -25,6 +27,8 @@ if __name__ == "__main__":
     nombre = pathlib.Path(ruta).stem
     try:
         texto = procesar_pdf(ruta)
+        texto = ''.join(c for c in texto if ord(c) < 0x10000 and (c.isprintable() or c in '\n\t'))
+        texto = " ".join(texto.split())
         result = {
             "url": f"pdf://{nombre}",
             "episodic": texto[:3000],
