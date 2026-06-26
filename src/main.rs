@@ -36,7 +36,14 @@ struct Args {
 fn construir_prompt(q: &str, memory: &AnimusMemory) -> String {
     let resultados = brain::Brain::search(memory, q);
 
-    let contexto: String = resultados.iter()
+    // CAMBIO 1: ya no se descartan 2 de los 3 fragmentos que search() recuperó.
+    // Antes: .take(1) tiraba la mayor parte del contexto multi-fuente.
+    // Ahora: se conservan todos los fragmentos válidos.
+    //
+    // CAMBIO 3: si hay más de un fragmento, se etiquetan como "Fuente N"
+    // para que el modelo sepa que debe combinarlas/compararlas, en vez de
+    // recibir un solo bloque de texto sin estructura.
+    let fragmentos_validos: Vec<String> = resultados.iter()
         .filter(|s| {
             !s.contains("--- ARCHIVO")
             && !s.contains("fn construir")
@@ -45,14 +52,24 @@ fn construir_prompt(q: &str, memory: &AnimusMemory) -> String {
             && !s.contains("mod memory")
             && !s.contains("impl ")
         })
-        .take(1)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .filter(|c| !matches!(*c, '{' | '}' | '<' | '>' | '\\' | '`' | '^' | '~' | '|'))
+        .map(|s| {
+            s.chars()
+                .filter(|c| !matches!(*c, '{' | '}' | '<' | '>' | '\\' | '`' | '^' | '~' | '|'))
+                .collect::<String>()
+        })
         .collect();
 
+    let contexto: String = if fragmentos_validos.len() <= 1 {
+        fragmentos_validos.join(" ")
+    } else {
+        fragmentos_validos.iter()
+            .enumerate()
+            .map(|(i, frag)| format!("Fuente {}: {}", i + 1, frag))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // --- el resto de construir_prompt sigue exactamente igual a partir de aquí ---
 
     // Buscar PDF relevante por palabras de la pregunta en la etiqueta
     let pdf_relevante = memory.nodes.iter()
@@ -76,7 +93,7 @@ fn construir_prompt(q: &str, memory: &AnimusMemory) -> String {
                 .collect();
             format!("Documento PDF relevante encontrado — {}: {}", n.label, resumen)
         })
-        .unwrap_or_default();  
+        .unwrap_or_default();
     // Inyectar el nodo PDF más reciente como contexto adicional
     let ultimo_pdf = memory.nodes.iter().rev()
         .find(|n| n.label.starts_with("PDF:"))
@@ -88,17 +105,33 @@ fn construir_prompt(q: &str, memory: &AnimusMemory) -> String {
         })
         .unwrap_or_default();
 
+    // CAMBIO 3 (continuación): instrucción explícita de síntesis cuando hay
+    // múltiples fuentes, para que Gemma no trate el contexto como un bloque
+    // homogéneo y realmente compare/combine.
+    let instruccion_sintesis = if fragmentos_validos.len() > 1 {
+        "Si las fuentes anteriores contienen información relacionada o se \
+        complementan entre sí, combínalas explícitamente en tu respuesta. \
+        Si una fuente contradice a otra, señala la contradicción.\n"
+    } else {
+        ""
+    };
+
     format!(
         "Eres ANIMUS, un sistema de conocimiento autónomo.\n\
         Contexto: {}\n\
         {}\n\
         {}\n\
+        {}\
         IMPORTANTE: Responde en prosa continua en español, SIN markdown, SIN negritas, \
         SIN listas, SIN encabezados. Un solo párrafo denso.\n\
+        Formato obligatorio: tu respuesta debe EMPEZAR con [RESPUESTA] y TERMINAR \
+        con [/RESPUESTA]. Las DOS etiquetas son obligatorias. No olvides escribir \
+        [/RESPUESTA] al final, después del último punto de tu respuesta.\n\
         Pregunta: {}",
         contexto,
         ultimo_pdf,
         pdf_relevante,
+        instruccion_sintesis,
         q
     )
 }
@@ -214,9 +247,26 @@ fn procesar_query(
 
     // Extraer solo el contenido entre marcadores — el razonamiento nunca entra al grafo
     let reporte = match (reporte.find("[RESPUESTA]"), reporte.rfind("[/RESPUESTA]")) {
-    (Some(i), Some(j)) if j > i => reporte[i + 11..j].trim().to_string(),
-    _ => return Err("Sin marcador [RESPUESTA] en la salida — nodo no integrado".into()),
+        (Some(i), Some(j)) if j > i => {
+            // Caso normal: ambos marcadores presentes y en el orden correcto.
+            reporte[i + 11..j].trim().to_string()
+        }
+        (Some(i), None) => {
+            // Caso de "apertura sin cierre": el modelo respondió pero no
+            // alcanzó a escribir [/RESPUESTA]. Se toma todo lo que sigue a
+            // la apertura como la respuesta completa.
+            eprintln!("⚠️ [RESPUESTA] encontrado sin [/RESPUESTA] — usando todo el texto restante.");
+            reporte[i + 11..].trim().to_string()
+        }
+        _ => {
+            // Ningún marcador de apertura: el modelo ignoró el formato por
+            // completo. Esto sí se descarta, es una señal real de respuesta
+            // no confiable (no hay forma de distinguir razonamiento interno
+            // de respuesta final sin la etiqueta).
+            return Err("Sin marcador [RESPUESTA] en la salida — nodo no integrado".into());
+        }
     };
+ 
     
     // Limpiar corchetes sueltos que el modelo a veces pega a los marcadores
     let reporte = reporte.trim_matches(|c: char| c == '[' || c == ']' || c.is_whitespace()).to_string();
@@ -239,6 +289,56 @@ fn procesar_query(
         memory.conectar_nodos(idx_karpathy, nuevo_indice, 0.85);
     }
 
+    // CAMBIO 2 (versión corregida): el problema real no era que search() no
+    // atravesara edges — es que nunca se crean edges entre documentos PDF
+    // relacionados entre sí. Tal como está el código, cada nodo nuevo solo se
+    // conecta al nodo "Karpathy" (ver procesar_query), así que el grafo es una
+    // estrella: todo apunta al centro, nada conecta documentos entre ellos.
+    // Sin esto, el traversal por edges en Brain::search no tiene nada útil
+    // que atravesar.
+    //
+    // Este bloque va DESPUÉS de la conexión a Karpathy que ya existe en
+    // procesar_query, usando las mismas variables (`memory`, `nuevo_indice`).
+
+    // Conectar el nodo nuevo con otros PDFs que comparten palabras clave
+    // relevantes en su etiqueta (label), para que el grafo capture relaciones
+    // reales entre documentos del corpus, no solo "documento -> origen".
+    if etiqueta.starts_with("PDF:") || etiqueta.starts_with("Reflexion:") {
+        // CORRECCIÓN: los nombres de archivo del corpus usan '-' y '_' como
+        // separador (ej. "2010_carta-circular-cc005_16_fatca.pdf"), no espacios.
+        // split_whitespace() nunca habría partido eso en palabras individuales.
+        // También se descartan tokens puramente numéricos (fechas, códigos),
+        // porque coincidir solo en números es ruido, no relación temática.
+        let palabras_propias: Vec<String> = etiqueta
+            .split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == '.' || c == '/')
+            .map(|w| w.to_lowercase())
+            .filter(|w| w.len() >= 5 && !w.chars().all(|c| c.is_ascii_digit()))
+            .collect();
+
+        if !palabras_propias.is_empty() {
+            let relacionados: Vec<usize> = memory.nodes.iter()
+                .enumerate()
+                .filter(|(idx, n)| {
+                    *idx != nuevo_indice
+                    && n.label.starts_with("PDF:")
+                    && {
+                        let label_otro = n.label.to_lowercase();
+                        palabras_propias.iter()
+                            .filter(|p| label_otro.contains(p.as_str()))
+                            .count() >= 2 // al menos 2 palabras compartidas, para evitar ruido
+                    }
+                })
+                .map(|(idx, _)| idx)
+                .take(2) // máximo 2 conexiones nuevas por nodo, para no saturar el grafo
+                .collect();
+
+            for idx_relacionado in relacionados {
+                println!("Vinculando con documento relacionado (idx {})...", idx_relacionado);
+                memory.conectar_nodos(idx_relacionado, nuevo_indice, 0.6);
+            }
+        }
+    }
+ 
 
     if env::args().any(|a| a == "--autonomous") {
         use crate::hypothesis::Hypothesis; // <-- aquí

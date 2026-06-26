@@ -22,7 +22,7 @@ impl Brain {
         let child = Command::new(LLAMA_SERVER_PATH)
             .args([
                 "-m", MODEL_PATH,
-                "-c", "2048",              // contexto; con E2B Q4 cabe en los 4GB de la 3050
+                "-c", "8192",              // contexto; con E2B Q4 cabe en los 4GB de la 3050
                 "-ngl", "99",              // todas las capas a GPU
                 "-t", "8",                 // hilos CPU para lo que no va a GPU
                 "--jinja",                 // aplica el chat template nativo de Gemma 4
@@ -221,45 +221,112 @@ impl Brain {
 
     pub fn search(memory: &AnimusMemory, query: &str) -> Vec<String> {
         let palabras_query: Vec<String> = query
-            .split_whitespace()
-            .filter(|&w| w.len() >= 4)
-            .map(|w| w.to_lowercase())
-            .collect();
+                .split_whitespace()
+                .filter(|&w| w.len() >= 4)
+                .map(|w| w.to_lowercase())
+                .collect();
 
         // Prioridad 1: PDF con TODAS las palabras clave en la etiqueta
-        let pdf_exacto: Option<String> = memory.nodes.iter()
-            .filter(|n| n.label.starts_with("PDF:"))
-            .filter(|n| {
-                let label = n.label.to_lowercase();
-                palabras_query.iter()
-                    .filter(|pq| pq.len() >= 5) // solo palabras largas
-                    .all(|pq| label.contains(pq.as_str()))
-            })
-            .map(|n| n.content.clone())
-            .next();
+        let pdf_exacto_idx: Option<usize> = memory.nodes.iter()
+                .position(|n| {
+                    n.label.starts_with("PDF:") && {
+                        let label = n.label.to_lowercase();
+                        palabras_query.iter()
+                            .filter(|pq| pq.len() >= 5)
+                            .all(|pq| label.contains(pq.as_str()))
+                    }
+                });
 
-        // Prioridad 2: búsqueda semántica normal en contenido
-        let por_contenido: Vec<String> = memory.nodes.iter()
-            .rev()  // ← invertir: nodos más recientes primero
-            .filter(|n| {
-                if n.label.starts_with("Origen:") 
+         // Prioridad 2: búsqueda semántica normal en contenido (por índice,
+        // para poder expandir luego por edges)
+        let frases_vacias = [
+            "no se encuentra información",
+            "no se encontró información",
+            "no es posible determinar",
+            "no se especifica",
+            "no se encuentra ninguna circular",
+            "no se identifica ningún documento",
+            "no se proporciona información",
+        ];
+
+        let indices_por_contenido: Vec<usize> = memory.nodes.iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, n)| {
+                if n.label.starts_with("Origen:")
                     || n.label.starts_with("nacimiento")
                     || n.content.to_lowercase().contains("motor candle")
                 {
                     return false;
                 }
+                // NUEVO: descartar reflexiones que son esencialmente "no sé" —
+                // no aportan contexto y desplazan a PDFs reales por antigüedad.
+                if n.label.starts_with("Reflexion:") {
+                    let c_lower = n.content.to_lowercase();
+                    if frases_vacias.iter().any(|f| c_lower.contains(f)) {
+                        return false;
+                    }
+                }
                 let c = n.content.to_lowercase();
                 palabras_query.iter().any(|pq| c.contains(pq))
             })
             .take(2)
-            .map(|n| n.content.clone())
+            .map(|(idx, _)| idx)
             .collect();
 
-        let mut resultados: Vec<String> = pdf_exacto.into_iter().collect();
-        resultados.extend(por_contenido);
-        resultados.truncate(3);
-        resultados
-    }
+            // CAMBIO 2: expansión por edges (un salto) desde los nodos semilla
+            // encontrados arriba. Antes search() solo hacía coincidencia de texto
+            // plano y nunca consultaba memory.edges, así que dos documentos
+            // relacionados pero sin palabras literales en común jamás se
+            // combinaban en el contexto. Esto es lo que más penalizaba las
+            // preguntas multi-fuente del benchmark frente a GraphRAG.
+            let mut semillas: Vec<usize> = pdf_exacto_idx.into_iter().collect();
+            semillas.extend(indices_por_contenido.iter().copied());
+
+            let mut vecinos: Vec<usize> = Vec::new();
+            for &semilla in &semillas {
+                for edge in &memory.edges {
+                    // Ambas direcciones: no sabemos de antemano si conectar_nodos()
+                    // registró la relación como (semilla -> otro) o (otro -> semilla).
+                    if edge.from == semilla && !semillas.contains(&edge.to) {
+                        vecinos.push(edge.to);
+                    } else if edge.to == semilla && !semillas.contains(&edge.from) {
+                        vecinos.push(edge.from);
+                    }
+                }
+            }
+            // Como mucho 2 vecinos extra, para no inundar el contexto de ruido
+            vecinos.truncate(2);
+
+            // Construir el resultado final: semillas primero (mantienen prioridad),
+            // luego los vecinos encontrados por grafo.
+            let mut indices_finales: Vec<usize> = Vec::new();
+            if let Some(idx) = pdf_exacto_idx {
+                indices_finales.push(idx);
+            }
+            for idx in indices_por_contenido {
+                if !indices_finales.contains(&idx) {
+                    indices_finales.push(idx);
+                }
+            }
+            for idx in vecinos {
+                if !indices_finales.contains(&idx) {
+                    indices_finales.push(idx);
+                }
+            }
+
+            let resultados: Vec<String> = indices_finales.iter()
+                .filter_map(|&idx| memory.nodes.get(idx))
+                .map(|n| n.content.clone())
+                .collect();
+
+            // Antes: truncate(3) plano. Ahora se permite algo más de margen
+            // (hasta 5) porque ahora SÍ puede haber contexto realmente
+            // relacionado por grafo, no solo ruido por coincidencia de palabras.
+            let mut resultados = resultados;
+            resultados.truncate(5);
+            resultados
+    }   
 
     pub fn integrate_knowledge(
         memory: &mut AnimusMemory,
